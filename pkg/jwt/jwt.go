@@ -1,62 +1,94 @@
 package jwt
 
 import (
-	"fmt"
+	"errors"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v4"
+	"loan-tracker-api/internal/domain/models"
 )
 
-var (
-	secretKey = []byte("your-secret-key")
-)
+var jwtSecret = []byte("your_secret_key")
 
-type Claims struct {
+// CustomClaims includes the standard JWT claims and custom claims (userID).
+type CustomClaims struct {
 	UserID string `json:"user_id"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
+// ParseToken parses and validates a JWT token string and returns the custom claims.
+func ParseToken(tokenString string) (*models.JWTClaims, error) {
+	claims := &models.JWTClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
 
-func GenerateToken(userID string, expiration time.Duration) (string, error) {
-	claims := Claims{
+	if err != nil || !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+
+	return claims, nil
+}
+
+// GenerateToken generates a JWT token with custom claims.
+func GenerateToken(claims *models.JWTClaims) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
+// GenerateAccessToken generates an access token for a user.
+func GenerateAccessToken(userID string) (string, error) {
+	claims := &models.JWTClaims{
 		UserID: userID,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(expiration).Unix(),
-			Issuer:    "loan-tracker-api",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)), // Access token expires in 15 minutes
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(secretKey)
+	return GenerateToken(claims)
 }
 
-// ValidateToken validates the JWT token and returns the claims if valid.
-func ValidateToken(tokenString string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		// Make sure the token's signing method matches the expected method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return secretKey, nil
+// GenerateRefreshToken generates a refresh token for a user.
+func GenerateRefreshToken(userID string) (string, error) {
+	claims := &models.JWTClaims{
+		UserID: userID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)), // Refresh token expires in 7 days
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	return GenerateToken(claims)
+}
+
+// ValidateToken validates a JWT token and returns the claims if valid.
+func ValidateToken(tokenStr string) (*models.JWTClaims, error) {
+	return ParseToken(tokenStr)
+}
+
+func ValidateRefreshToken(tokenString string) (*models.JWTClaims, error) {
+	claims := &models.JWTClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
 	})
 
-	if err != nil {
-		return nil, err
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return nil, fmt.Errorf("invalid token")
+	if err != nil || !token.Valid {
+		return nil, errors.New("invalid refresh token")
 	}
 
 	return claims, nil
 }
 
-// ParseToken extracts and returns the claims from the JWT token.
-func ParseToken(tokenString string) (*Claims, error) {
-	claims, err := ValidateToken(tokenString)
-	if err != nil {
-		return nil, err
+func VerifyResetToken(tokenString string) (string, error) {
+	claims := &models.JWTClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		return "", errors.New("invalid or expired reset token")
 	}
-	return claims, nil
+
+	return claims.UserID, nil
 }

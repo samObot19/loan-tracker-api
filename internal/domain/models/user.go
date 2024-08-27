@@ -2,39 +2,27 @@ package models
 
 import (
 	"time"
-	"loan-tracker-api/pkg/validator"
+	"github.com/google/uuid"
 )
 
-// User represents a user in the system.
 type User struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Password  string    `json:"password"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                string    `bson:"_id,omitempty"`
+	Email             string    `bson:"email"`
+	Password          string    `bson:"password"`
+	Name              string    `bson:"name"`
+	Role              string    `bson:"role"`
+	IsActive          bool      `bson:"is_active"`
+	VerificationToken string    `bson:"verification_token"`
+	CreatedAt         time.Time `bson:"created_at"`
+	UpdatedAt         time.Time `bson:"updated_at"`
 }
 
-// NewUser creates a new user instance after validating the input.
-func NewUser(email, password, name, role string) (*User, error) {
-	if err := validator.ValidateEmail(email); err != nil {
-		return nil, err
-	}
 
-	if err := validator.ValidatePassword(password); err != nil {
-		return nil, err
-	}
-
-	if err := validator.ValidateRole(role); err != nil {
-		return nil, err
-	}
+func NewUser(email, name, role string) (*User, error) {
 
 	user := &User{
 		ID:        generateID(),
 		Email:     email,
-		Password:  hashPassword(password),
 		Name:      name,
 		Role:      role,
 		IsActive:  false,
@@ -45,24 +33,25 @@ func NewUser(email, password, name, role string) (*User, error) {
 	return user, nil
 }
 
-// Activate sets the user's status to active.
+
+func (u *User) SetVerificationToken(token string) {
+	u.VerificationToken = token
+	u.UpdatedAt = time.Now() // Update the updated_at field
+}
+
+// Activate marks the user as active
 func (u *User) Activate() {
 	u.IsActive = true
 	u.UpdatedAt = time.Now()
 }
 
-// Deactivate sets the user's status to inactive.
+// Deactivate marks the user as inactive
 func (u *User) Deactivate() {
 	u.IsActive = false
 	u.UpdatedAt = time.Now()
 }
 
-// Helper functions (assuming they are defined elsewhere)
+// generateID generates a unique ID for the user
 func generateID() string {
-	return "some-unique-id"
-}
-
-func hashPassword(password string) string {
-	// Implementation of password hashing
-	return "hashed-password"
+	return uuid.NewString()
 }

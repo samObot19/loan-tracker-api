@@ -2,44 +2,47 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/mongo"
 	"loan-tracker-api/internal/handler"
-	"loan-tracker-api/internal/usecase"
+	"loan-tracker-api/internal/repository/mongo"
 	"loan-tracker-api/internal/repository"
-	"loan-tracker-api/internal/infrastructure/database"
+
+	"loan-tracker-api/internal/infrastructure/middleware"
+	"go.uber.org/zap"
 )
 
-func SetupRouter() *gin.Engine {
-	r := gin.Default()
+func InitRoutes(r *gin.Engine, db *mongo.Client, logger *zap.Logger) {
+	userRepo := repository.NewMongoUserRepository(db.Database("loan-tracker"))
+	userUsecase := usecase.NewUserUsecase(userRepo)
+	userHandler := handler.NewUserHandler(userUsecase, logger)
 
-	// Connect to MongoDB
-	db, err := database.ConnectDB("mongodb://localhost:27017", "loan_tracker")
-	if err != nil {
-		panic(err)
+	userRoutes := r.Group("/users")
+	{
+		userRoutes.POST("/register", userHandler.RegisterUser)
+		userRoutes.GET("/verify-email", userHandler.VerifyEmail)
+		userRoutes.POST("/login", userHandler.Login)
+		userRoutes.POST("/token/refresh", userHandler.RefreshToken)
+
+		userRoutes.Use(middleware.JWTAuthMiddleware())
+		{
+			userRoutes.GET("/profile", userHandler.GetUserProfile)
+			userRoutes.POST("/password-reset", userHandler.RequestPasswordReset)
+			// userRoutes.POST("/password-reset/confirm", userHandler.PasswordResetConfirm)
+		}
 	}
 
-	// Initialize repositories
-	userRepo := repository.NewMongoUserRepository(db)
+	adminRepo := repository.NewMongoAdminRepository(db.Database("loan-tracker")) // Assuming you have this
+	adminUsecase := usecase.NewAdminUsecase(adminRepo)
+	adminHandler := handler.NewAdminHandler(adminUsecase, logger)
 
-	// Initialize use cases
-	userUsecase := usecase.NewUserUsecase(userRepo)
-	adminUsecase := usecase.NewAdminUsecase(userRepo)
-
-	// Initialize handlers
-	userHandler := handler.NewUserHandler(userUsecase)
-	adminHandler := handler.NewAdminHandler(adminUsecase)
-
-	// Define routes
-	r.POST("/users/register", userHandler.RegisterUser)
-	r.GET("/users/verify-email", userHandler.VerifyEmail)
-	r.POST("/users/login", userHandler.Login)
-	r.POST("/users/token/refresh", userHandler.RefreshToken)
-	r.GET("/users/profile", userHandler.GetUserProfile)
-	r.POST("/users/password-reset", userHandler.RequestPasswordReset)
-	r.POST("/users/password-update", userHandler.UpdatePassword)
-
-	// Admin routes
-	r.GET("/admin/users", adminHandler.ViewAllUsers)
-	r.DELETE("/admin/users/:id", adminHandler.DeleteUser)
-
-	return r
+	adminRoutes := r.Group("/admin")
+	adminRoutes.Use(middleware.JWTAuthorization(), middleware.AdminOnly())
+	{
+		adminRoutes.GET("/users", adminHandler.GetAllUsers)
+		adminRoutes.DELETE("/users/:id", adminHandler.DeleteUser)
+		adminRoutes.GET("/loans", adminHandler.ViewAllLoans)
+		adminRoutes.PATCH("/loans/:id/status", adminHandler.UpdateLoanStatus)
+		adminRoutes.DELETE("/loans/:id", adminHandler.DeleteLoan)
+		adminRoutes.GET("/logs", adminHandler.ViewSystemLogs)
+	}
 }

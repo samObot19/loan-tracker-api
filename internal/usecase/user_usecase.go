@@ -5,10 +5,11 @@ import (
 	"errors"
 	"loan-tracker-api/internal/domain/models"
 	"loan-tracker-api/internal/repository"
-	"loan-tracker-api/pkg/password"
+	e "loan-tracker-api/internal/infrastructure/email"
 	"loan-tracker-api/pkg/utils"
 	"loan-tracker-api/pkg/jwt"
 	"golang.org/x/crypto/bcrypt"
+	"time"
 )
 
 type UserUsecase interface {
@@ -21,18 +22,15 @@ type UserUsecase interface {
 	UpdatePassword(ctx context.Context, token, newPassword string) error
 }
 
-
 type userUsecaseImpl struct {
 	userRepo repository.UserRepository
 }
-
 
 func NewUserUsecase(userRepo repository.UserRepository) UserUsecase {
 	return &userUsecaseImpl{
 		userRepo: userRepo,
 	}
 }
-
 
 func (u *userUsecaseImpl) RegisterUser(ctx context.Context, email, password, name, role string) (*models.User, error) {
 	if role != models.RoleUser && role != models.RoleAdmin {
@@ -44,13 +42,13 @@ func (u *userUsecaseImpl) RegisterUser(ctx context.Context, email, password, nam
 		return nil, err
 	}
 
-	hashedPassword, err := password.HashPassword(password)
+	hashedPassword, err := utils.HashPassword(password)
 	if err != nil {
 		return nil, err
 	}
 	user.Password = hashedPassword
 
-	token, err := utils.GenerateVerificationToken(email)
+	token, err := utils.GenerateVerificationToken()
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +58,7 @@ func (u *userUsecaseImpl) RegisterUser(ctx context.Context, email, password, nam
 		return nil, err
 	}
 
-	// Send verification email
-	err = utils.SendVerificationEmail(email, token)
+	err = e.SendVerificationEmail(email, token)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +66,8 @@ func (u *userUsecaseImpl) RegisterUser(ctx context.Context, email, password, nam
 	return user, nil
 }
 
-
-
 func (u *userUsecaseImpl) VerifyEmail(ctx context.Context, token string) error {
+	// Find user by verification token
 	user, err := u.userRepo.FindUserByVerificationToken(ctx, token)
 	if err != nil {
 		return err
@@ -80,7 +76,13 @@ func (u *userUsecaseImpl) VerifyEmail(ctx context.Context, token string) error {
 		return errors.New("invalid or expired token")
 	}
 
-	user.VerifyEmail()
+	// Update user's email verification status
+	err = utils.UpdateUserVerificationStatus(user)
+	if err != nil {
+		return err
+	}
+
+	// Save the updated user information
 	err = u.userRepo.UpdateUser(ctx, user)
 	if err != nil {
 		return err
@@ -88,7 +90,6 @@ func (u *userUsecaseImpl) VerifyEmail(ctx context.Context, token string) error {
 
 	return nil
 }
-
 
 func (u *userUsecaseImpl) LoginUser(ctx context.Context, email, password string) (*models.User, string, string, error) {
 	user, err := u.userRepo.FindUserByEmail(ctx, email)
@@ -99,7 +100,6 @@ func (u *userUsecaseImpl) LoginUser(ctx context.Context, email, password string)
 		return nil, "", "", errors.New("invalid email or password")
 	}
 
-	
 	if !user.IsActive {
 		return nil, "", "", errors.New("account not active")
 	}
@@ -109,12 +109,12 @@ func (u *userUsecaseImpl) LoginUser(ctx context.Context, email, password string)
 		return nil, "", "", errors.New("invalid email or password")
 	}
 
-	accessToken, err := jwt.GenerateAccessToken(user.ID.Hex())
+	accessToken, err := jwt.GenerateAccessToken(user.ID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	refreshToken, err := jwt.GenerateRefreshToken(user.ID.Hex())
+	refreshToken, err := jwt.GenerateRefreshToken(user.ID)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -122,10 +122,8 @@ func (u *userUsecaseImpl) LoginUser(ctx context.Context, email, password string)
 	return user, accessToken, refreshToken, nil
 }
 
-
 func (u *userUsecaseImpl) RefreshToken(ctx context.Context, refreshToken string) (string, error) {
 	claims, err := jwt.ValidateRefreshToken(refreshToken)
-
 	if err != nil {
 		return "", errors.New("invalid refresh token")
 	}
@@ -146,25 +144,6 @@ func (u *userUsecaseImpl) GetUserProfile(ctx context.Context, userID string) (*m
 		return nil, errors.New("user not found")
 	}
 	return user, nil
-}
-
-func (h *userHandlerImpl) RequestPasswordReset(c *gin.Context) {
-	var request struct {
-		Email string `json:"email" binding:"required,email"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	err := h.userUsecase.RequestPasswordReset(c, request.Email)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Password reset link sent"})
 }
 
 func (u *userUsecaseImpl) UpdatePassword(ctx context.Context, token, newPassword string) error {
@@ -191,6 +170,43 @@ func (u *userUsecaseImpl) UpdatePassword(ctx context.Context, token, newPassword
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (u *userUsecaseImpl) RequestPasswordReset(ctx context.Context, emailAddress string) error {
+	// Step 1: Find user by email
+	user, err := u.userRepo.FindUserByEmail(ctx, emailAddress)
+	if err != nil {
+		return err
+	}
+
+	if user == nil {
+		return errors.New("user not found")
+	}
+
+	// Step 2: Generate a password reset token
+	resetToken, err := utils.GenerateResetToken()
+	if err != nil {
+		return err
+	}
+
+	// Step 3: Store the reset token with an expiration time
+	expiration := time.Now().Add(1 * time.Hour) // Token expires in 1 hour
+	err = u.userRepo.StorePasswordResetToken(ctx, user.ID, resetToken, expiration)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Send the password reset email
+	resetLink := "https://yourdomain.com/reset-password?token=" + resetToken
+	err = e.SendPasswordResetEmail(user.Email, resetLink)
+	if err != nil {
+		return err
+	}
+
+	// Step 5: Log the request
+	utils.LogInfo("Password reset request for email: " + emailAddress)
 
 	return nil
 }
